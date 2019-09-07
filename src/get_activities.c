@@ -24,7 +24,6 @@ typedef struct
     TTWATCH *watch;
     OPTIONS *options;
     uint32_t formats;
-
 } DGACallback;
 
 /*****************************************************************************/

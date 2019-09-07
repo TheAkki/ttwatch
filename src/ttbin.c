@@ -1005,7 +1005,229 @@ static size_t curl_write_data(char *ptr, size_t size, size_t nmemb, void *userda
     return length;
 }
 
-void download_elevation_data(TTBIN_FILE *ttbin)
+typedef enum {Start, Tag_Result, OpenArray, OpenElement, FindElement, ElementLat, ElementLong, ElementElevation, CloseElement, CloseArray, End, Error} ParserState;
+
+static size_t curl_write_json_data(char *ptr, size_t size, size_t nmemb, void *userdata)
+{
+    ELEV_DATA_INFO *info = (ELEV_DATA_INFO*)userdata;
+    char *pChar;
+    
+    const char TagResult[] = "\"results\":";
+    const char TagLat[] = "\"latitude\":";
+    const char TagLong[] = "\"longitude\":";
+    const char TagElevation[] = "\"elevation\":"; 
+    
+    const size_t szTagResult = strlen(TagResult);
+    const size_t szTagLat = strlen(TagLat);
+    const size_t szTagLong = strlen(TagLong);
+    const size_t szTagEleviation = strlen(TagElevation);
+    
+    
+    const size_t length = size * nmemb;
+    ParserState state = Start;
+    unsigned int uiParseElevationFinished = 0;
+    
+    for (pChar = ptr; pChar < (ptr + length);)
+    {
+        if(*pChar == ' ')
+        {
+            ++pChar;
+            continue;
+        }
+        
+        switch(state)
+        {
+            case Start:
+                if(*pChar == '{')
+                {
+                    state = Tag_Result;
+                }
+                else
+                {
+                    state = Error;
+                }
+                break;
+                
+            case Tag_Result:
+                if(strncmp(pChar, TagResult, szTagResult) == 0)
+                {
+                    pChar += szTagResult;
+                    state = OpenArray;
+                }
+                else
+                {
+                    state = Error;
+                }
+                break;
+                
+            case OpenArray:
+                if(*pChar == '[')
+                    state = OpenElement;
+                else
+                {
+                    state = Error;
+                }
+                break;
+                
+            case OpenElement:
+                if(*pChar == '{')
+                {
+                    state = FindElement;
+                    info->elev = 0.0f;
+                    info->mult = 1.0f;
+                    uiParseElevationFinished = 0;
+                }
+                else
+                {
+                    state = Error;
+                }
+                break;
+                
+            case FindElement:
+                if(*pChar == '}')
+                {
+                    state = CloseElement;
+                    continue;
+                }
+                if(strncmp(pChar, TagLat, szTagLat) == 0)
+                {
+                    pChar += szTagLat;
+                    state = ElementLat;
+                }
+                else if(strncmp(pChar, TagLong, szTagLong) == 0)
+                {
+                    pChar += szTagLong;
+                    state = ElementLong;
+                }
+                else if(strncmp(pChar, TagElevation, szTagEleviation) == 0)
+                {
+                    pChar += szTagEleviation;
+                    state = ElementElevation;
+                }
+                else
+                {
+                    state = Error;
+                }
+                break;
+                
+            case ElementLat: // fallthrough
+            case ElementLong:
+                if(isdigit(*pChar) || *pChar == '.' || *pChar == '-')
+                {
+                    // fine: next char
+                }
+                else if(*pChar == '}')
+                {
+                    state = CloseElement;
+                }
+                else if(*pChar == ',')
+                {
+                    state = FindElement;
+                }
+                break;
+                
+            case ElementElevation:
+                if (isdigit(*pChar))
+                {
+                    if (info->mult > 0.5f)
+                        info->elev = (info->elev * 10.0f) + (*pChar - '0');
+                    else if(info->mult < -0.5f)
+                    {
+                        info->elev = -(*pChar - '0');
+                        info->mult = 1.0f;
+                    }
+                    else
+                    {
+                        info->elev += info->mult * (*pChar - '0');
+                        info->mult /= 10.0f;
+                    }
+                }
+                else if(*pChar == '-')
+                {
+                    if(info->elev == 0.0f)
+                    {
+                        info->mult = -1.0f;
+                    }
+                    else
+                    {
+                        // invalid position
+                        state = Error;
+                    }
+                }
+                else if (*pChar == '.')
+                    info->mult = 0.1f;                
+                else if(*pChar == ',')
+                {
+                    state = FindElement;
+                    uiParseElevationFinished = 1;
+                }
+                else if(*pChar == '}')
+                {
+                    state = CloseElement;
+                    uiParseElevationFinished = 1;
+                    //--s1; // not possible to make continue here.... so undo the increment before
+                }
+                else
+                {
+                    state = Error;
+                }
+                
+                if(uiParseElevationFinished > 0)
+                {
+                    if (info->current_count < info->max_count)
+                    {
+                        (*info->data)->gps.elevation = info->elev;
+                        ++info->current_count;
+                        ++info->data;
+                    }         
+                }
+                break;
+                
+            case CloseElement:
+                if(*pChar == ',')
+                {
+                    state = OpenElement;
+                }
+                else if(*pChar == ']')
+                {
+                    state = CloseArray;
+                }
+                else
+                {
+                    state = Error;
+                }
+                break;
+                
+            case CloseArray:
+                if(*pChar == '}')
+                    state = End;
+                else
+                {
+                    state = Error;
+                }
+                break;
+                
+            case End:
+                state = Error;
+                break;
+                
+            case Error:
+                return 0;
+                
+            default: /* wtf */;
+        }
+        
+        
+        ++pChar;
+    }
+
+    return length;
+}
+
+
+
+
+void download_elevation_data_tomtom(TTBIN_FILE *ttbin)
 {
     CURL *curl;
     struct curl_slist *headers;
@@ -1074,7 +1296,136 @@ void download_elevation_data(TTBIN_FILE *ttbin)
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     if (result != CURLE_OK)
-        fprintf(stderr, "Unable to download elevation data: %d\n", result);
+        fprintf(stderr, "Unable to download elevation data: %d\n", result);    
+}
+
+
+#define MIN(a,b) (a<b)?a:b
+void download_elevation_data_openelevation(TTBIN_FILE *ttbin, char* connection)
+{
+    const unsigned int MAX_DATASETS_PER_QUERY = 100;
+    
+    CURL *curl;
+    struct curl_slist *headers;
+    char *post_data;
+    char *str;
+    ELEV_DATA_INFO info = {0};
+    int result;    
+
+    curl = curl_easy_init();
+    if (!curl)
+    {
+        fprintf(stderr, "Unable to initialise libcurl\n");
+        return;
+    }
+
+    /* create the post string to send to the server */
+    post_data = malloc(MAX_DATASETS_PER_QUERY * 52 + 10);
+    
+    headers = curl_slist_append(NULL, "Content-Type: application/json");
+    headers = curl_slist_append(headers, "Accept: application/json");   
+    
+    if(connection != NULL)
+    {
+        curl_easy_setopt(curl, CURLOPT_URL, connection);
+    }
+    else
+    {
+        //curl_easy_setopt(curl, CURLOPT_URL, "https://api.open-elevation.com/api/v1/lookup");
+        curl_easy_setopt(curl, CURLOPT_URL, "http://0.0.0.0:10000/api/v1/lookup");    
+    }
+    
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
+    curl_easy_setopt(curl, CURLOPT_POST, 1);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 1);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "ttwatch");
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 50);
+    curl_easy_setopt(curl, CURLOPT_TCP_KEEPALIVE, 120L);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &info);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, curl_write_json_data);
+    curl_easy_setopt(curl, CURLOPT_USE_SSL,  CURLUSESSL_ALL);   
+    
+    /* setup the callback function data structure */
+    info.mult = 1.0;
+    info.elev = 0.0;
+    info.data = ttbin->gps_records.records;
+    info.max_count = ttbin->gps_records.count;
+    info.current_count = 0;
+
+    for(unsigned int uiDataLoop = 0; uiDataLoop < ttbin->gps_records.count; )
+    {
+        const unsigned int uiCountThisLoop = MIN(ttbin->gps_records.count - uiDataLoop, MAX_DATASETS_PER_QUERY);        
+        
+        info.current_count = uiDataLoop;
+        info.data = &ttbin->gps_records.records[uiDataLoop];
+        
+        str = post_data;
+        str += sprintf(str, "{\"locations\": [");
+        
+        
+        for(unsigned int uiDataSetLoop = 0; uiDataSetLoop < uiCountThisLoop; ++uiDataSetLoop)
+        {
+            const unsigned int uiIndex = uiDataLoop + uiDataSetLoop;            
+            if (uiDataSetLoop < (uiCountThisLoop - 1))
+            {
+                str += sprintf(str, "{\"latitude\": %f, \"longitude\": %f},",
+                    ttbin->gps_records.records[uiIndex]->gps.latitude,
+                    ttbin->gps_records.records[uiIndex]->gps.longitude);
+            }
+            else
+            {
+                str += sprintf(str, "{\"latitude\": %f, \"longitude\": %f}",
+                    ttbin->gps_records.records[uiIndex]->gps.latitude,
+                    ttbin->gps_records.records[uiIndex]->gps.longitude);
+            }
+        }
+        
+        str += sprintf(str, "]}");
+        
+        // reset data length
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, str - post_data);
+        
+        // call
+        result = curl_easy_perform(curl);
+        if (result != CURLE_OK)
+        {
+            fprintf(stderr, "Unable to download elevation data: %d\n", result);
+            break;
+        }
+        
+        // increment loop counter
+        uiDataLoop += uiCountThisLoop;
+    }
+    
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+}
+
+
+void download_elevation_data3(TTBIN_FILE *ttbin, TTBIN_SERVER_TYPE type, char* connection)
+{
+    /* only download elevation data if we have GPS records */
+    if (!ttbin || !ttbin->gps_records.count || !ttbin->gps_records.records)
+        return;
+  
+    switch(type)
+    {
+        case TomTom:
+            printf("Download Elevation from TomTom\n");
+            download_elevation_data_tomtom(ttbin);
+            break;
+            
+        case OpenElevation:
+            printf("Download Elevation from Open-Elevation (Server: %s)\n", connection);
+            download_elevation_data_openelevation(ttbin, connection);
+            break;
+    }
+}
+
+void download_elevation_data(TTBIN_FILE *ttbin)
+{
+    download_elevation_data3(ttbin, TomTom, NULL);
 }
 
 /*****************************************************************************/

@@ -53,17 +53,24 @@ void help(char *argv[])
     printf("Converts TomTom TTBIN files to other file formats.\n");
     printf("\n");
     printf("Mandatory arguments to long options are mandatory for short options too.\n");
-    printf("  -h, --help          Print this help.\n");
-    printf("  -l, --laps=[list]   Replace the laps recorded on the watch with a list of\n");
-    printf("                        alternative laps.\n");
-    printf("  -E, --no-elevation  Do not download elevation data.\n");
-    printf("  -a, --all           Output all supported file formats.\n");
+    printf("  -h, --help                                Print this help.\n");
+    printf("  -l, --laps=[list]                         Replace the laps recorded on the watch with a list of\n");
+    printf("                                            alternative laps.\n");
+    printf("  -S, --open-elevation-server=[connection]  Set connection for an open-elevation server.\n");
+    printf("                                            Default: http://0.0.0.0:10000/api/v1/lookup (Assuming you run your own local open-elevation server.)\n");
+    printf("                                            Maybe https://api.open-elevation.com/api/v1/lookup is available.\n");
+    printf("  -s, --server-type=[type]                  Specify the type of server you will connect.\n");
+    printf("                                            Available:\n");
+    printf("                                                'T': TomTom [Default]\n");
+    printf("                                                'O': Open-Elevation (See -S)\n");
+    printf("  -E, --no-elevation                        Do not download elevation data.\n");
+    printf("  -a, --all                                 Output all supported file formats.\n");
     for (i = 0; i < OFFLINE_FORMAT_COUNT; ++i)
     {
         if (OFFLINE_FORMATS[i].producer)
         {
             char *str = toupper_s(OFFLINE_FORMATS[i].name);
-            printf("  -%c, --%-13sOutput a %s file.\n", OFFLINE_FORMATS[i].name[0],
+            printf("  -%c, --%-36sOutput a %s file.\n", OFFLINE_FORMATS[i].name[0],
                 OFFLINE_FORMATS[i].name, str);
             free(str);
         }
@@ -89,22 +96,26 @@ int main(int argc, char *argv[])
     FILE *input_file = 0;
     TTBIN_FILE *ttbin = 0;
     unsigned i;
+    TTBIN_SERVER_TYPE servertype = TomTom;
+    char* serverstring = NULL;
 
     int opt = 0;
     int option_index = 0;
 
     /* create the options lists */
-    #define OPTION_COUNT    (OFFLINE_FORMAT_COUNT + 5)
+    #define OPTION_COUNT    (OFFLINE_FORMAT_COUNT + 7)
     struct option long_options[OPTION_COUNT] =
     {
         { "help", no_argument, 0, 'h' },
         { "all",  no_argument, 0, 'a' },
         { "laps", required_argument, 0, 'l' },
         { "no-elevation", no_argument, 0, 'E' },
+        { "open-elevation-server", required_argument, 0, 'S'},
+        { "server-type", required_argument, 0, 's'}
     };
-    char short_options[OPTION_COUNT + 1] = "hl:aE";
+    char short_options[OPTION_COUNT + 3 + 1] = "hl:aEs:S:";
 
-    opt = 4;
+    opt = strlen(short_options);
     for (i = 0; i < OFFLINE_FORMAT_COUNT; ++i)
     {
         if (OFFLINE_FORMATS[i].producer)
@@ -141,6 +152,26 @@ int main(int argc, char *argv[])
         case 'E':   /* no elevation */
             download_elevation = 0;
             break;
+        case 's':
+            if(*optarg == 'T')
+            {
+                servertype = TomTom;
+            }
+            else if(*optarg == 'O')
+            {
+                servertype = OpenElevation;
+            }
+            else
+            {
+                fprintf(stderr, "Invalid argument '%c' for server-type", *optarg);
+                return 6;
+            }
+            break;
+            
+        case 'S':
+            serverstring = optarg;
+            break;   
+            
         default:
             for (i = 0; i < OFFLINE_FORMAT_COUNT; ++i)
             {
@@ -195,7 +226,7 @@ int main(int argc, char *argv[])
 
     /* if we have gps data, download the elevation data */
     if (ttbin->gps_records.count && download_elevation)
-        download_elevation_data(ttbin);
+        download_elevation_data3(ttbin, servertype, serverstring);
 
     /* set the list of laps if we have been asked to */
     if (set_laps)

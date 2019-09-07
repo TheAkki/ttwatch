@@ -326,6 +326,12 @@ typedef struct
     TTBIN_RECORD *last;
 } TTBIN_FILE;
 
+typedef enum 
+{
+    TomTom,
+    OpenElevation
+}TTBIN_SERVER_TYPE;
+
 /*****************************************************************************/
 
 TTBIN_FILE *read_ttbin_file(FILE *file);
@@ -343,6 +349,7 @@ void delete_record(TTBIN_FILE *ttbin, TTBIN_RECORD *record);
 const char *create_filename(TTBIN_FILE *file, const char *ext);
 
 void download_elevation_data(TTBIN_FILE *ttbin);
+void download_elevation_data3(TTBIN_FILE *ttbin, TTBIN_SERVER_TYPE type, char* connection);
 
 uint32_t export_formats(TTBIN_FILE *ttbin, uint32_t formats);
 
